@@ -4,8 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 )
 
+// ValueMarshaler marshals the V part of TLV so a single value such as an int, byte, string, etc
+// It is generic because every type has a different length and meaning, for example:
+// 97 becomes 97 0 0 0 if T is int32
+// 97 becomes 97 0 0 0 0 0 0 0 if T is int64
+// "a" becomes 97 if T is string
 type ValueMarshaler[T any] struct {
 	value T
 }
@@ -28,9 +34,15 @@ func (m *ValueMarshaler[T]) MarshalBinary() ([]byte, error) {
 			return nil, fmt.Errorf("ValueMarshaler.MarshalBinary: %w", err)
 		}
 	}
+
 	return buf.Bytes(), nil
 }
 
+// ValueUnmarshaler unmarshals the V part of TLV so a single value such as an int, byte, string, etc
+// It is generic because every type has a different length and meaning, for example:
+// 97 0 0 0 becomes 97 if T is int32
+// 97 0 0 0 0 0 0 0 becomes 97 if T is int64
+// 97 0 0 0 becomes "a" if T is string
 type ValueUnmarshaler[T any] struct {
 	Value T
 }
@@ -39,17 +51,20 @@ func NewValueUnmarshaler[T any]() *ValueUnmarshaler[T] {
 	return &ValueUnmarshaler[T]{}
 }
 
-func (u *ValueUnmarshaler[T]) UnmarshalBinary(data []byte) error {
+func (d *ValueUnmarshaler[T]) UnmarshalBinary(data []byte) error {
 	var value T
 	switch v := any(&value).(type) {
 	case *string:
 		*v = string(data)
 	default:
 		if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &value); err != nil {
-			return fmt.Errorf("ValueUnmarshaler.UnmarsharBinary: %w", err)
+			if err == io.EOF {
+				return err
+			}
+			return fmt.Errorf("ValueUnmarshaler: unable to unmarshal data: %w", err)
 		}
 	}
-	u.Value = value
+	d.Value = value
 	return nil
 }
 

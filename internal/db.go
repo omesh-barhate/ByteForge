@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/omesh-barhate/ByteForge/internal/platform/parser"
-	parserio "github.com/omesh-barhate/ByteForge/internal/platform/parser/io"
+	"github.com/omesh-barhate/ByteForge/internal/platform/parser/io"
 	"github.com/omesh-barhate/ByteForge/internal/table"
 	columnio "github.com/omesh-barhate/ByteForge/internal/table/column/io"
 	"github.com/omesh-barhate/ByteForge/internal/table/wal"
@@ -20,8 +20,8 @@ const (
 type Tables map[string]*table.Table
 
 type Database struct {
-	name   string
-	path   string
+	Name   string
+	Path   string
 	Tables Tables
 }
 
@@ -31,23 +31,32 @@ func NewDatabase(name string) (*Database, error) {
 	}
 
 	db := &Database{
-		name: name,
-		path: path(name),
+		Name: name,
+		Path: path(name),
 	}
 
 	tables, err := db.readTables()
 	if err != nil {
 		return nil, fmt.Errorf("NewDatabase: %w", err)
 	}
-	db.Tables = tables
 
+	db.Tables = tables
 	for _, t := range db.Tables {
 		if err := t.RestoreWAL(); err != nil {
 			return nil, fmt.Errorf("NewDatabase: %w", err)
 		}
 	}
-
 	return db, nil
+}
+
+func (db *Database) Close() error {
+	var e error
+	for _, t := range db.Tables {
+		if err := t.Close(); err != nil {
+			e = err
+		}
+	}
+	return e
 }
 
 func CreateDatabase(name string) (*Database, error) {
@@ -55,19 +64,20 @@ func CreateDatabase(name string) (*Database, error) {
 		return nil, NewDatabaseAlreadyExistsError(name)
 	}
 
-	if err := os.MkdirAll(path(name), 0777); err != nil {
+	err := os.MkdirAll(path(name), 0777)
+	if err != nil {
 		return nil, fmt.Errorf("CreateDatabase: %w", err)
 	}
 
 	return &Database{
-		name:   name,
-		path:   path(name),
-		Tables: make(Tables),
+		Name:   name,
+		Path:   path(name),
+		Tables: make(map[string]*table.Table),
 	}, nil
 }
 
 func (db *Database) readTables() (Tables, error) {
-	entries, err := os.ReadDir(db.path)
+	entries, err := os.ReadDir(db.Path)
 	if err != nil {
 		return nil, fmt.Errorf("Database.readTables: %w", err)
 	}
@@ -80,35 +90,45 @@ func (db *Database) readTables() (Tables, error) {
 		if strings.Contains(v.Name(), "_idx") {
 			continue
 		}
-		if _, err := v.Info(); err != nil {
+		if _, err = v.Info(); err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
-		f, err := os.OpenFile(filepath.Join(db.path, v.Name()), os.O_APPEND|os.O_RDWR, 0777)
+		f, err := os.OpenFile(filepath.Join(db.Path, v.Name()), os.O_APPEND|os.O_RDWR, 0666)
+		if err != nil {
+			return nil, fmt.Errorf("Database.readTables: %w", err)
+		}
+		parts := strings.Split(v.Name(), ".")
+		if len(parts) != 2 {
+			return nil, table.NewInvalidFilename(v.Name())
+		}
+		idxFile, err := os.OpenFile(filepath.Join(db.Path, parts[0]+"_idx."+parts[1]), os.O_APPEND|os.O_RDWR, 0666)
 		if err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 
-		r, err := parserio.NewReader(f)
-		columnDefReader := columnio.NewColumnDefinitionReader(r)
+		r, err := io.NewReader(f)
+		columnDefReader := columnio.NewColumnDefinitionReader(f, r)
 		tableName, err := table.GetTableName(f)
 		if err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
-
-		writeAheadLog, err := wal.NewWAL(db.path, tableName)
+		writeAheadLog, err := wal.NewWAL(db.Path, tableName)
 		if err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 
-		t, err := table.NewTable(f, r, columnDefReader, writeAheadLog)
+		t, err := table.NewTable(f, idxFile, r, columnDefReader, writeAheadLog)
 		if err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 
-		if err := t.ReadColumnDefinitions(); err != nil {
+		if err = t.ReadColumnDefinitions(); err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 		if err = t.SetRecordParser(parser.NewRecordParser(f, t.ColumnNames())); err != nil {
+			return nil, fmt.Errorf("Database.readTables: %w", err)
+		}
+		if err = t.LoadIdx(); err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 		tables = append(tables, t)
@@ -118,44 +138,48 @@ func (db *Database) readTables() (Tables, error) {
 	for _, v := range tables {
 		tablesMap[v.Name] = v
 	}
-
 	return tablesMap, nil
 }
 
-func (db *Database) CreateTable(name string, columnNames []string, columns table.Columns) (*table.Table, error) {
-	path := filepath.Join(path(db.name), name) + table.FileExtension
+func (db *Database) CreateTable(dbPath, name string, columnNames []string, columns table.Columns) (*table.Table, error) {
+	path := filepath.Join(dbPath, name+table.FileExtension)
+	idxPath := filepath.Join(dbPath, name+"_idx"+table.FileExtension)
 	if _, err := os.Open(path); err == nil {
 		return nil, NewTableAlreadyExistsError(name)
 	}
 
 	f, err := os.Create(path)
 	if err != nil {
+		fmt.Printf("here1\n")
+		return nil, NewCannotCreateTableError(err, name)
+	}
+	idxFile, err := os.Create(idxPath)
+	if err != nil {
+		fmt.Printf("here2\n")
 		return nil, NewCannotCreateTableError(err, name)
 	}
 
-	r, err := parserio.NewReader(f)
+	r, err := io.NewReader(f)
 	if err != nil {
-		return nil, NewCannotCreateTableError(err, name)
+		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}
-	columnDefReader := columnio.NewColumnDefinitionReader(r)
+	columnDefReader := columnio.NewColumnDefinitionReader(f, r)
 	recParser := parser.NewRecordParser(f, columnNames)
-	writeAheadLog, err := wal.NewWAL(db.path, name)
+	writeAheadLog, err := wal.NewWAL(db.Path, name)
 	if err != nil {
 		return nil, NewCannotCreateTableError(err, name)
 	}
 
-	t, err := table.NewTableWithColumns(f, r, columnDefReader, writeAheadLog, columns, columnNames)
+	t, err := table.NewTableWithColumns(f, idxFile, r, columnDefReader, writeAheadLog, columns, columnNames)
 	if err != nil {
-		return nil, NewCannotCreateTableError(err, name)
+		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}
-	err = t.SetRecordParser(recParser)
-	if err != nil {
-		return nil, NewCannotCreateTableError(err, name)
+	if err = t.SetRecordParser(recParser); err != nil {
+		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}
 
-	err = t.WriteColumnDefinitions()
-	if err != nil {
-		return nil, NewCannotCreateTableError(err, name)
+	if err = t.WriteColumnDefinitions(); err != nil {
+		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}
 
 	db.Tables[name] = t

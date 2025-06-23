@@ -2,6 +2,7 @@ package encoding
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/omesh-barhate/ByteForge/internal/platform/types"
@@ -23,29 +24,22 @@ func (m *TLVMarshaler[T]) MarshalBinary() ([]byte, error) {
 	buf := bytes.Buffer{}
 	typeFlag, err := m.typeFlag()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("TLVMarshaler.MarshalBinary: %w", err)
 	}
 	length, err := m.dataLength()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("TLVMarshaler.MarshalBinary: %w", err)
 	}
-
-	byteMarshaler := NewValueMarshaler[byte](typeFlag)
-	intMarshaler := NewValueMarshaler[uint32](length)
 
 	// type
-	typeBuf, err := byteMarshaler.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("TLVMarshaler.MarshalBinary: %w", err)
+	if err := binary.Write(&buf, binary.LittleEndian, typeFlag); err != nil {
+		return nil, fmt.Errorf("TLVMarshaler.MarshalBinary: type: %w", err)
 	}
-	buf.Write(typeBuf)
 
 	// length
-	lenBuf, err := intMarshaler.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("TLVMarshaler.MarshalBinary: %w", err)
+	if err := binary.Write(&buf, binary.LittleEndian, length); err != nil {
+		return nil, fmt.Errorf("TLVMarshaler.MarshalBinary: len: %w", err)
 	}
-	buf.Write(lenBuf)
 
 	valueBuf, err := m.valueMarshaler.MarshalBinary()
 	if err != nil {
@@ -68,7 +62,7 @@ func (m *TLVMarshaler[T]) typeFlag() (byte, error) {
 	case string:
 		return types.TypeString, nil
 	default:
-		return 0, &UnsupportedDataTypeError{dataType: fmt.Sprintf("%T", v)}
+		return 0, NewUnsupportedDataTypeError(fmt.Sprintf("%T", v))
 	}
 }
 
@@ -85,24 +79,24 @@ func (m *TLVMarshaler[T]) dataLength() (uint32, error) {
 	case string:
 		return uint32(len(v)), nil
 	default:
-		return 0, &UnsupportedDataTypeError{dataType: fmt.Sprintf("%T", v)}
+		return 0, NewUnsupportedDataTypeError(fmt.Sprintf("%T", v))
 	}
 }
 
 func (m *TLVMarshaler[T]) TLVLength() (uint32, error) {
 	switch v := any(m.value).(type) {
 	case byte:
-		return types.LenMeta + types.LenByte, nil
+		return 1 + 4 + 1, nil
 	case int32, uint32:
-		return types.LenMeta + types.LenInt32, nil
+		return 1 + 4 + 4, nil
 	case int64:
-		return types.LenMeta + types.LenInt64, nil
+		return 1 + 4 + 8, nil
 	case bool:
-		return types.LenMeta + types.LenByte, nil
+		return 1 + 4 + 1, nil
 	case string:
-		return types.LenMeta + uint32(len(v)), nil
+		return 1 + 4 + uint32(len(v)), nil
 	default:
-		return 0, &UnsupportedDataTypeError{dataType: fmt.Sprintf("%T", v)}
+		return 0, NewUnsupportedDataTypeError(fmt.Sprintf("%T", v))
 	}
 }
 
@@ -131,33 +125,32 @@ func NewTLVUnmarshaler[T any](unmarshaler *ValueUnmarshaler[T]) *TLVUnmarshaler[
 	}
 }
 
-func (u *TLVUnmarshaler[T]) UnmarshalBinary(data []byte) error {
-	u.BytesRead = 0
+func (t *TLVUnmarshaler[T]) UnmarshalBinary(data []byte) error {
+	t.BytesRead = 0
 
 	byteUnmarshaler := NewValueUnmarshaler[byte]()
-	intUnmarshaler := NewValueUnmarshaler[uint32]()
+	intUnmarshaler := NewValueUnmarshaler[int32]()
 
 	// type
 	if err := byteUnmarshaler.UnmarshalBinary(data); err != nil {
-		return fmt.Errorf("TLVUnmarshaler.UnmarshalBinary: %w", err)
+		return fmt.Errorf("TLVUnmarshaler.UnmarshalBinary: type: %w", err)
 	}
-	u.dataType = byteUnmarshaler.Value
-	u.BytesRead += types.LenByte
+	t.dataType = byteUnmarshaler.Value
+	t.BytesRead += types.LenByte
 
 	// length
-	if err := intUnmarshaler.UnmarshalBinary(data[u.BytesRead:]); err != nil {
-		return fmt.Errorf("TLVUnmarshaler.UnmarshalBinary: %w", err)
+	if err := intUnmarshaler.UnmarshalBinary(data[1:]); err != nil {
+		return fmt.Errorf("TLVUnmarshaler.UnmarshalBinary: len: %w", err)
 	}
-	u.length = intUnmarshaler.Value
-	u.BytesRead += types.LenInt32
+	t.length = uint32(intUnmarshaler.Value)
+	t.BytesRead += types.LenInt32
 
 	// value
-	// TODO: WAL előtt nem volt "+ u.length" ez még lehet hogy gondot okoz valahol valamiért
-	if err := u.unmarshaler.UnmarshalBinary(data[u.BytesRead:(u.BytesRead + u.length)]); err != nil {
-		return fmt.Errorf("TLVUnmarshaler.UnmarshalBinary: %w", err)
+	if err := t.unmarshaler.UnmarshalBinary(data[5:]); err != nil {
+		return fmt.Errorf("TLVUnmarshaler.UnmarshalBinary: val: %w", err)
 	}
-	u.Value = u.unmarshaler.Value
-	u.BytesRead += u.length
+	t.Value = t.unmarshaler.Value
+	t.BytesRead += t.length
 
 	return nil
 }

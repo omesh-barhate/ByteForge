@@ -10,30 +10,44 @@ import (
 )
 
 type Reader struct {
-	reader io.Reader
+	f io.ReadSeeker
 }
 
-func NewReader(r io.Reader) (*Reader, error) {
-	if r == nil {
-		return nil, fmt.Errorf("NewReader: nil reader given")
+func NewReader(f io.ReadSeeker) (*Reader, error) {
+	if f == nil {
+		return nil, fmt.Errorf("NewReader: nil pointer given")
 	}
 	return &Reader{
-		reader: r,
+		f: f,
 	}, nil
 }
 
 func (r *Reader) ReadUint32() (uint32, error) {
 	buf := make([]byte, types.LenInt32)
-	if _, err := r.Read(buf); err != nil {
-		return 0, err
+	n, err := r.Read(buf)
+	if err != nil {
+		if err == io.EOF {
+			return 0, err
+		}
+		return 0, fmt.Errorf("Reader.ReadUint32: %w", err)
+	}
+	if n != types.LenInt32 {
+		return 0, NewIncompleteReadError(types.LenInt32, n)
 	}
 	return binary.LittleEndian.Uint32(buf), nil
 }
 
 func (r *Reader) ReadByte() (byte, error) {
 	buf := make([]byte, types.LenByte)
-	if _, err := r.Read(buf); err != nil {
-		return 0, err
+	n, err := r.Read(buf)
+	if err != nil {
+		if err == io.EOF {
+			return 0, err
+		}
+		return 0, fmt.Errorf("Reader.ReadByte: %w", err)
+	}
+	if n != types.LenByte {
+		return 0, NewIncompleteReadError(types.LenByte, n)
 	}
 	return buf[0], nil
 }
@@ -65,15 +79,12 @@ func (r *Reader) ReadTLV() ([]byte, error) {
 }
 
 func (r *Reader) Read(b []byte) (int, error) {
-	if b == nil {
-		return 0, fmt.Errorf("Reader.Read: nil buffer given")
-	}
-	n, err := r.reader.Read(b)
+	n, err := r.f.Read(b)
 	if err != nil {
-		return 0, err
-	}
-	if n != len(b) {
-		return n, fmt.Errorf("Reader.Read: %w", &IncompleteReadError{exceptedBytes: len(b), actualBytes: n})
+		if err == io.EOF {
+			return 0, err
+		}
+		return 0, fmt.Errorf("Reader.Read: %w", err)
 	}
 	return n, nil
 }

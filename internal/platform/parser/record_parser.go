@@ -1,23 +1,21 @@
 package parser
 
 import (
-	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	platformio "github.com/omesh-barhate/ByteForge/internal/platform/parser/io"
 	"github.com/omesh-barhate/ByteForge/internal/platform/types"
 )
 
 type RecordParser struct {
-	file    *os.File
+	file    io.ReadSeeker
 	columns []string
 	Value   *RawRecord
 	reader  *platformio.Reader
 }
 
-func NewRecordParser(f *os.File, columns []string) *RecordParser {
+func NewRecordParser(f io.ReadSeeker, columns []string) *RecordParser {
 	return &RecordParser{
 		file:    f,
 		columns: columns,
@@ -37,6 +35,15 @@ func (r *RecordParser) Parse() error {
 			return err
 		}
 		return fmt.Errorf("RecordParser.Parse: %w", err)
+	}
+	if t == types.TypePage {
+		if _, err = read.ReadUint32(); err != nil {
+			return fmt.Errorf("RecordParser.Parse: %w", err)
+		}
+		t, err = read.ReadByte()
+		if err != nil {
+			return fmt.Errorf("RecordParser.Parse: %w", err)
+		}
 	}
 	if t != types.TypeRecord && t != types.TypeDeletedRecord {
 		return fmt.Errorf("RecordParser.Parse: file offset needs to point at the record definition")
@@ -62,15 +69,25 @@ func (r *RecordParser) Parse() error {
 	}
 
 	for i := 0; i < len(r.columns); i++ {
-		tlvParser := NewTLVParser(read)
-		value, err := tlvParser.Parse()
-		if errors.Is(err, io.EOF) {
+		_, err = read.ReadByte()
+		if err == io.EOF {
 			r.Value = NewRawRecord(
 				lenRecord,
 				record,
 			)
 			return nil
 		}
+		if err != nil {
+			return fmt.Errorf("RecordParser.Parse: %w", err)
+		}
+
+		// we need to seek back 1 byte so TLVParser can decode it
+		if _, err := r.file.Seek(-1*types.LenByte, io.SeekCurrent); err != nil {
+			return fmt.Errorf("RecordParser.Parse: %w", err)
+		}
+
+		tlvParser := NewTLVParser(read)
+		value, err := tlvParser.Parse()
 		if err != nil {
 			return fmt.Errorf("RecordParser.Parse: %w", err)
 		}
@@ -125,4 +142,22 @@ func NewRawRecord(size uint32, record map[string]interface{}) *RawRecord {
 		FullSize: size + types.LenMeta,
 		Record:   record,
 	}
+}
+
+func (r *RawRecord) Id() (int64, error) {
+	var id int64 = -1
+	for k, v := range r.Record {
+		if k != "id" {
+			continue
+		}
+		val, ok := v.(int64)
+		if !ok {
+			return -1, NewInvalidIDError(r)
+		}
+		id = val
+	}
+	if id == -1 {
+		return -1, NewInvalidIDError(r)
+	}
+	return id, nil
 }

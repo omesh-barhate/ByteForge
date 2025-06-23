@@ -18,10 +18,10 @@ func NewColumnDefinitionWriter(w io.Writer) *ColumnDefinitionWriter {
 func (c *ColumnDefinitionWriter) Write(data []byte) (int, error) {
 	n, err := c.w.Write(data)
 	if err != nil {
-		return n, fmt.Errorf("ColumneDefinitionWriter.Write: %w", err)
+		return 0, fmt.Errorf("ColumnDefinitionWriter.Write: file.Write: %w", err)
 	}
 	if n != len(data) {
-		return n, fmt.Errorf("ColumnDefinitionWriter.Write:: %w", NewIncompleteWriteError(n, len(data)))
+		return n, NewIncompleteWriteError(len(data), n)
 	}
-	return n, nil
+	return 0, nil
 }

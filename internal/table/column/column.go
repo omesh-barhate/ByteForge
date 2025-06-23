@@ -4,18 +4,23 @@ import (
 	"fmt"
 
 	platformbytes "github.com/omesh-barhate/ByteForge/internal/platform/bytes"
-	"github.com/omesh-barhate/ByteForge/internal/table/column/encoding"
+	columnencoding "github.com/omesh-barhate/ByteForge/internal/table/column/encoding"
 )
 
 const (
 	NameLength byte = 64
 )
 
-type Column struct {
-	Name     [NameLength]byte
-	DataType byte
-	Opts     Opts
-}
+type (
+	Column struct {
+		Name     [NameLength]byte
+		DataType byte
+		Opts     Opts
+	}
+	Opts struct {
+		AllowNull bool
+	}
+)
 
 func New(name string, dataType byte, opts Opts) (*Column, error) {
 	if len(name) > int(NameLength) {
@@ -29,23 +34,19 @@ func New(name string, dataType byte, opts Opts) (*Column, error) {
 	return col, nil
 }
 
-type Opts struct {
-	AllowNull bool
-}
-
-func NewOpts(allowNull bool) Opts {
+func NewColumnOpts(allowNull bool) Opts {
 	return Opts{
 		AllowNull: allowNull,
 	}
 }
 
 func (c *Column) MarshalBinary() ([]byte, error) {
-	marshaler := encoding.NewColumnDefinitionMarshaler(c.Name, c.DataType, c.Opts.AllowNull)
+	marshaler := columnencoding.NewColumnDefinitionMarshaler(c.Name, c.DataType, c.Opts.AllowNull)
 	return marshaler.MarshalBinary()
 }
 
 func (c *Column) UnmarshalBinary(data []byte) error {
-	marshaler := encoding.NewColumnDefinitionMarshaler(c.Name, c.DataType, c.Opts.AllowNull)
+	marshaler := columnencoding.NewColumnDefinitionMarshaler(c.Name, c.DataType, c.Opts.AllowNull)
 	if err := marshaler.UnmarshalBinary(data); err != nil {
 		return fmt.Errorf("Column.UnmarshalBinary: %w", err)
 	}
@@ -62,4 +63,8 @@ func (c *Column) NameToStr() string {
 		str += string(v)
 	}
 	return str
+}
+
+func (c *Column) String() string {
+	return fmt.Sprintf("name: %s type: %d allow_null: %t\n", c.NameToStr(), c.DataType, c.Opts.AllowNull)
 }
