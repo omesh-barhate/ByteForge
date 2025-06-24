@@ -46,7 +46,7 @@ func (r *RecordParser) Parse() error {
 		}
 	}
 	if t != types.TypeRecord && t != types.TypeDeletedRecord {
-		return fmt.Errorf("RecordParser.Parse: file offset needs to point at the record definition")
+		return fmt.Errorf("RecordParser.Parse: unable to read record: file offset needs to point at the record definition: %v", t)
 	}
 
 	if t == types.TypeDeletedRecord {
@@ -64,10 +64,6 @@ func (r *RecordParser) Parse() error {
 
 	record := make(map[string]interface{})
 	lenRecord, err := read.ReadUint32()
-	if err != nil {
-		return fmt.Errorf("RecordParser.Parse: %w", err)
-	}
-
 	for i := 0; i < len(r.columns); i++ {
 		_, err = read.ReadByte()
 		if err == io.EOF {
@@ -132,7 +128,7 @@ type RawRecord struct {
 	Size uint32
 	// FullSize is sum of [RawRecord.Size] and [types.LenMeta] that includes metadata associated with a records such as the type and length bytes
 	FullSize uint32
-	// Record contains the actual fields
+	// Values contains the actual fields
 	Record map[string]interface{}
 }
 
@@ -145,19 +141,9 @@ func NewRawRecord(size uint32, record map[string]interface{}) *RawRecord {
 }
 
 func (r *RawRecord) Id() (int64, error) {
-	var id int64 = -1
-	for k, v := range r.Record {
-		if k != "id" {
-			continue
-		}
-		val, ok := v.(int64)
-		if !ok {
-			return -1, NewInvalidIDError(r)
-		}
-		id = val
-	}
-	if id == -1 {
+	val, ok := r.Record["id"].(int64)
+	if !ok {
 		return -1, NewInvalidIDError(r)
 	}
-	return id, nil
+	return val, nil
 }

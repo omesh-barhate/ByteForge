@@ -34,7 +34,7 @@ func New(name string, dataType byte, opts Opts) (*Column, error) {
 	return col, nil
 }
 
-func NewColumnOpts(allowNull bool) Opts {
+func NewOpts(allowNull bool) Opts {
 	return Opts{
 		AllowNull: allowNull,
 	}

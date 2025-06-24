@@ -3,6 +3,7 @@ package index
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"github.com/omesh-barhate/ByteForge/internal/platform/parser/encoding"
 	"github.com/omesh-barhate/ByteForge/internal/platform/types"
 )
+
+var errItemNotFound = errors.New("item not found in index")
 
 type Index struct {
 	btree *btree.BTreeG[Item]
@@ -60,44 +63,44 @@ func (i *Index) Get(id int64) (Item, error) {
 
 func (i *Index) persist() error {
 	if err := i.file.Truncate(0); err != nil {
-		return fmt.Errorf("index.persist: file.Truncate: %w", err)
+		return fmt.Errorf("index.persist: %w", err)
 	}
 	if _, err := i.file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("index.persist: file.Seek: %w", err)
+		return fmt.Errorf("index.persist: %w", err)
 	}
 
 	b, err := i.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("index.persist: marshalBinary: %w", err)
+		return fmt.Errorf("index.persist: %w", err)
 	}
 	n, err := i.file.Write(b)
 	if err != nil {
-		return fmt.Errorf("index.persist: file.Write: %w", err)
+		return fmt.Errorf("index.persist: %w", err)
 	}
 	if n != len(b) {
-		return NewIncompleteWriteError(len(b), n)
+		return fmt.Errorf("index.persist: %w", NewIncompleteWriteError(len(b), n))
 	}
 	return nil
 }
 
 func (i *Index) Load() error {
 	if _, err := i.file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("index.Load: file.Seek: %w", err)
+		return fmt.Errorf("index.Load: %w", err)
 	}
 	stat, err := i.file.Stat()
 	if err != nil {
-		return fmt.Errorf("index.Load: file.Stat: %w", err)
+		return fmt.Errorf("index.Load: %w", err)
 	}
 	b := make([]byte, stat.Size())
 	n, err := i.file.Read(b)
 	if err != nil {
-		return fmt.Errorf("index.Load: file.Read: %w", err)
+		return fmt.Errorf("index.Load: %w", err)
 	}
 	if n != len(b) {
-		return NewIncompleteReadError(len(b), n)
+		return fmt.Errorf("index.Load: %w", NewIncompleteReadError(len(b), n))
 	}
 	if err = i.UnmarshalBinary(b); err != nil {
-		return fmt.Errorf("index.Load: UnmarshalBinary: %w", err)
+		return fmt.Errorf("index.Load: %w", err)
 	}
 	return nil
 }
@@ -111,16 +114,16 @@ func (i *Index) MarshalBinary() ([]byte, error) {
 	}
 
 	// length
-	item := Item{}
-	itemsLen := uint32(i.btree.Len()) * (item.TLVLength() + types.LenMeta)
-	if err := binary.Write(&buf, binary.LittleEndian, itemsLen); err != nil {
+	itemsLen := uint32(i.btree.Len() * binary.Size(Item{}))
+	itemsMetaLen := uint32(i.btree.Len()) * types.LenMeta
+	if err := binary.Write(&buf, binary.LittleEndian, itemsLen+itemsMetaLen); err != nil {
 		return nil, fmt.Errorf("index.MarshalBinary: len: %w", err)
 	}
 
 	for _, v := range i.GetAll() {
 		data, err := v.MarshalBinary()
 		if err != nil {
-			return nil, fmt.Errorf("index.MarshalBinary: value: %w", err)
+			return nil, fmt.Errorf("index.MarshalBinary: %w", err)
 		}
 		buf.Write(data)
 	}
@@ -202,49 +205,42 @@ func (i *Item) MarshalBinary() ([]byte, error) {
 	buf := bytes.Buffer{}
 	// type
 	if err := binary.Write(&buf, binary.LittleEndian, types.TypeIndexItem); err != nil {
-		return nil, fmt.Errorf("Item.MarshalBinary: type: %w", err)
+		return nil, fmt.Errorf("item.MarshalBinary: type: %w", err)
 	}
 	// len
-	if err := binary.Write(&buf, binary.LittleEndian, i.TLVLength()); err != nil {
-		return nil, fmt.Errorf("Item.MarshalBinary: len: %w", err)
+	if err := binary.Write(&buf, binary.LittleEndian, uint32(binary.Size(i))); err != nil {
+		return nil, fmt.Errorf("item.MarshalBinary: len: %w", err)
 	}
 	idTLV := encoding.NewTLVMarshaler(i.id)
 	idBuf, err := idTLV.MarshalBinary()
 	if err != nil {
-		return nil, fmt.Errorf("Item.MarshalBinary: ID TLV: %w", err)
+		return nil, fmt.Errorf("item.MarshalBinary: ID: %w", err)
 	}
 	buf.Write(idBuf)
 
 	pagePosTLV := encoding.NewTLVMarshaler(i.PagePos)
 	pagePosBuf, err := pagePosTLV.MarshalBinary()
 	if err != nil {
-		return nil, fmt.Errorf("Item.MarshalBinary: page pos: %w", err)
+		return nil, fmt.Errorf("item.MarshalBinary: page pos: %w", err)
 	}
 	buf.Write(pagePosBuf)
 	return buf.Bytes(), nil
 }
 
-func (i *Item) TLVLength() uint32 {
-	return uint32(2*types.LenInt64 + 2*types.LenMeta)
-}
-
 // ReadRaw returns the raw byte array stored in the idx. It's for debugging
 func (i *Index) ReadRaw() ([]byte, error) {
-	_, err := i.file.Seek(0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("Index.ReadRaw: file.Seek: %w", err)
+	if _, err := i.file.Seek(0, 0); err != nil {
+		return nil, fmt.Errorf("index.ReadRaw: %w", err)
 	}
 
 	stat, err := i.file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("Index.ReadRaw: file.Stat: %w", err)
+		return nil, fmt.Errorf("index.ReadRaw: %w", err)
 	}
 
 	buf := make([]byte, stat.Size())
-	_, err = i.file.Read(buf)
-	if err != nil {
-		return nil, fmt.Errorf("Index.ReadRaw: file.Read: %w", err)
+	if _, err = i.file.Read(buf); err != nil {
+		return nil, fmt.Errorf("index.ReadRaw: %w", err)
 	}
-
 	return buf, nil
 }

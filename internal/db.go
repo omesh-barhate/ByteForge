@@ -27,7 +27,7 @@ type Database struct {
 
 func NewDatabase(name string) (*Database, error) {
 	if !exists(name) {
-		return nil, NewDatabaseDoesNotExistError(name)
+		return nil, fmt.Errorf("NewDatabase: %w", NewDatabaseDoesNotExistError(name))
 	}
 
 	db := &Database{
@@ -61,11 +61,10 @@ func (db *Database) Close() error {
 
 func CreateDatabase(name string) (*Database, error) {
 	if exists(name) {
-		return nil, NewDatabaseAlreadyExistsError(name)
+		return nil, fmt.Errorf("CreateDatabase: %w", NewDatabaseAlreadyExistsError(name))
 	}
 
-	err := os.MkdirAll(path(name), 0777)
-	if err != nil {
+	if err := os.MkdirAll(path(name), 0777); err != nil {
 		return nil, fmt.Errorf("CreateDatabase: %w", err)
 	}
 
@@ -90,7 +89,7 @@ func (db *Database) readTables() (Tables, error) {
 		if strings.Contains(v.Name(), "_idx") {
 			continue
 		}
-		if _, err = v.Info(); err != nil {
+		if _, err := v.Info(); err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 		f, err := os.OpenFile(filepath.Join(db.Path, v.Name()), os.O_APPEND|os.O_RDWR, 0666)
@@ -99,7 +98,7 @@ func (db *Database) readTables() (Tables, error) {
 		}
 		parts := strings.Split(v.Name(), ".")
 		if len(parts) != 2 {
-			return nil, table.NewInvalidFilename(v.Name())
+			return nil, fmt.Errorf("Database.readTables: %w", table.NewInvalidFilename(v.Name()))
 		}
 		idxFile, err := os.OpenFile(filepath.Join(db.Path, parts[0]+"_idx."+parts[1]), os.O_APPEND|os.O_RDWR, 0666)
 		if err != nil {
@@ -145,18 +144,16 @@ func (db *Database) CreateTable(dbPath, name string, columnNames []string, colum
 	path := filepath.Join(dbPath, name+table.FileExtension)
 	idxPath := filepath.Join(dbPath, name+"_idx"+table.FileExtension)
 	if _, err := os.Open(path); err == nil {
-		return nil, NewTableAlreadyExistsError(name)
+		return nil, fmt.Errorf("Database.CreateTable: %w", NewTableAlreadyExistsError(name))
 	}
 
 	f, err := os.Create(path)
 	if err != nil {
-		fmt.Printf("here1\n")
-		return nil, NewCannotCreateTableError(err, name)
+		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}
 	idxFile, err := os.Create(idxPath)
 	if err != nil {
-		fmt.Printf("here2\n")
-		return nil, NewCannotCreateTableError(err, name)
+		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}
 
 	r, err := io.NewReader(f)

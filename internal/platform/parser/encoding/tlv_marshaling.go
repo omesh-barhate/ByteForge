@@ -43,7 +43,7 @@ func (m *TLVMarshaler[T]) MarshalBinary() ([]byte, error) {
 
 	valueBuf, err := m.valueMarshaler.MarshalBinary()
 	if err != nil {
-		return nil, fmt.Errorf("TLVMarshaler.MarshalBinary: %w", err)
+		return nil, fmt.Errorf("TLVMarshaler.MarshalBinary: value: %w", err)
 	}
 	buf.Write(valueBuf)
 	return buf.Bytes(), nil
@@ -129,7 +129,7 @@ func (t *TLVUnmarshaler[T]) UnmarshalBinary(data []byte) error {
 	t.BytesRead = 0
 
 	byteUnmarshaler := NewValueUnmarshaler[byte]()
-	intUnmarshaler := NewValueUnmarshaler[int32]()
+	intUnmarshaler := NewValueUnmarshaler[uint32]()
 
 	// type
 	if err := byteUnmarshaler.UnmarshalBinary(data); err != nil {
@@ -147,7 +147,7 @@ func (t *TLVUnmarshaler[T]) UnmarshalBinary(data []byte) error {
 
 	// value
 	if err := t.unmarshaler.UnmarshalBinary(data[5:]); err != nil {
-		return fmt.Errorf("TLVUnmarshaler.UnmarshalBinary: val: %w", err)
+		return fmt.Errorf("TLVUnmarshaler.UnmarshalBinary: value: %w", err)
 	}
 	t.Value = t.unmarshaler.Value
 	t.BytesRead += t.length

@@ -27,11 +27,11 @@ func (m *ValueMarshaler[T]) MarshalBinary() ([]byte, error) {
 	switch v := any(m.value).(type) {
 	case string:
 		if err := binary.Write(&buf, binary.LittleEndian, []byte(v)); err != nil {
-			return nil, fmt.Errorf("ValueMarshaler.MarshalBinary: %w", err)
+			return nil, fmt.Errorf("ValueMarshaler.MarshalBinary: string: %w", err)
 		}
 	default:
 		if err := binary.Write(&buf, binary.LittleEndian, m.value); err != nil {
-			return nil, fmt.Errorf("ValueMarshaler.MarshalBinary: %w", err)
+			return nil, fmt.Errorf("ValueMarshaler.MarshalBinary: default: %w", err)
 		}
 	}
 
@@ -61,31 +61,9 @@ func (d *ValueUnmarshaler[T]) UnmarshalBinary(data []byte) error {
 			if err == io.EOF {
 				return err
 			}
-			return fmt.Errorf("ValueUnmarshaler: unable to unmarshal data: %w", err)
+			return fmt.Errorf("ValueUnmarshaler.UnmarshalBinary: %w", err)
 		}
 	}
 	d.Value = value
 	return nil
-}
-
-type ValueUnmarshalerFactory struct{}
-
-func NewValueUnmarshalerFactory() *ValueUnmarshalerFactory {
-	return &ValueUnmarshalerFactory{}
-}
-
-func (f *ValueUnmarshalerFactory) CreateInt64() *ValueUnmarshaler[int64] {
-	return NewValueUnmarshaler[int64]()
-}
-
-func (f *ValueUnmarshalerFactory) CreateInt32() *ValueUnmarshaler[int32] {
-	return NewValueUnmarshaler[int32]()
-}
-
-func (f *ValueUnmarshalerFactory) CreateByte() *ValueUnmarshaler[byte] {
-	return NewValueUnmarshaler[byte]()
-}
-
-func (f *ValueUnmarshalerFactory) CreateString() *ValueUnmarshaler[string] {
-	return NewValueUnmarshaler[string]()
 }

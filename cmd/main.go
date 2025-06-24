@@ -29,9 +29,6 @@ func main() {
 
 func testCreateTable() {
 	_ = os.Remove("./data/my_db/users.bin")
-	_ = os.Remove("./data/my_db/users_wal.bin")
-	_ = os.Remove("./data/my_db/users_wal_last_commit.bin")
-	_ = os.Remove("./data/my_db/users_idx.bin")
 
 	db, err := internal.NewDatabase("my_db")
 	if err != nil {
@@ -50,7 +47,6 @@ func testCreateTable() {
 	insert(db, 1, "software engineer", 31, true)
 	insert(db, 2, "software engineer", 27, false)
 	insert(db, 3, "designer", 28, true)
-
 	queryAll(db)
 }
 
@@ -71,28 +67,13 @@ func testReadTable() {
 	queryAll(db)
 }
 
-func measure(db *internal.Database) {
-	measureOne(db, 1)
-	measureOne(db, 10)
-	measureOne(db, 100)
-	measureOne(db, 1_000)
-	measureOne(db, 9_999)
-}
-
-func measureOne(db *internal.Database, id int64) {
-	start := time.Now()
-	query(db, id)
-	since := time.Since(start)
-	fmt.Printf("selected ID %d in %d microseconds\n", id, since.Microseconds())
-}
-
 func createTable(db *internal.Database) {
-	id, err := column.New("id", types.TypeInt64, column.NewColumnOpts(false))
+	id, err := column.New("id", types.TypeInt64, column.NewOpts(false))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	username, err := column.New("username", types.TypeString, column.NewColumnOpts(false))
+	username, err := column.New("username", types.TypeString, column.NewOpts(false))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -170,6 +151,17 @@ func del(db *internal.Database) {
 	}
 }
 
+func delById(db *internal.Database, id int64) {
+	_, err := db.Tables["users"].Delete(map[string]interface{}{
+		"id": id,
+	})
+
+	if err != nil {
+		fmt.Println("here")
+		log.Fatal(err)
+	}
+}
+
 func query(db *internal.Database, id int64) {
 	rows, err := db.Tables["users"].Select(map[string]interface{}{
 		"id": id,
@@ -177,19 +169,21 @@ func query(db *internal.Database, id int64) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("%v\n", rows)
+	fmt.Printf("%s\n", rows.Extra)
 }
 
-func queryAll(db *internal.Database) {
-	rows, err := db.Tables["users"].Select(map[string]interface{}{})
+func queryByJob(db *internal.Database, job string) {
+	rows, err := db.Tables["users"].Select(map[string]interface{}{
+		"job": job,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println(rows)
 }
 
-func queryBy(db *internal.Database, whereStmt map[string]interface{}) {
-	rows, err := db.Tables["users"].Select(whereStmt)
+func queryAll(db *internal.Database) {
+	rows, err := db.Tables["users"].Select(map[string]interface{}{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -211,4 +205,11 @@ func seed(db *internal.Database, n int) {
 		}
 	}
 	fmt.Println("seeding done")
+}
+
+func measureOne(db *internal.Database, id int64) {
+	start := time.Now()
+	query(db, id)
+	since := time.Since(start)
+	fmt.Printf("selected ID %d in %d microseconds\n", id, since.Microseconds())
 }

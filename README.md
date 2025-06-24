@@ -7,7 +7,7 @@ This is my learning toy project for understanding how databases work, written in
 - Use TLV encoding and a file/folder setup inspired by PostgreSQL
 - Get basic CRUD (Create, Read, Update, Delete) working
 - Add Write-Ahead Logging (WAL) so data isn't lost if the program crashes
-- Try paging, B-Tree indexing, and maybe an LRU buffer pool
+- Try paging, B-Tree indexing, and add an LRU buffer pool (page cache) for performance
 - Add simple full-text search for string columns
 
 This project is just me figuring out how real databases do their thing, step by step. If it breaks, that's part of the fun!
@@ -21,11 +21,10 @@ This project is just me figuring out how real databases do their thing, step by 
 - Test everything with a simple command-line interface
 
 ## How Indexing Works
-- Uses B-tree indexes (with Google's btree package) for fast primary key lookups
-- Each table has its own index, rebuilt in memory when you start the program
-- Index files use TLV encoding
-- Only primary key (id) searches are fast; range searches aren't optimized
-- The whole index must fit in memory
+- B-tree indexes for fast primary key lookups; rebuilt in memory at startup
+
+## How the Buffer Pool Works
+- LRU cache stores recently accessed data pages in memory to speed up reads and reduce disk I/O
 
 ## What You Need
 - Go 1.23 or newer

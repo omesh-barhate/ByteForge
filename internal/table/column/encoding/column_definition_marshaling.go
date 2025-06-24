@@ -87,7 +87,7 @@ func (c *ColumnDefinitionMarshaler) UnmarshalBinary(data []byte) error {
 	n++
 
 	if dataType != types.TypeColumnDefinition {
-		return fmt.Errorf("ColumnDefinitionMarshaler.UnmarsharBinary: expected type flag %d received %d", types.TypeColumnDefinition, dataType)
+		return fmt.Errorf("ColumnDefinitionMarshaler.UnmarshalBinary: expected type flag %d received %d", types.TypeColumnDefinition, dataType)
 	}
 
 	// length of struct
@@ -99,7 +99,7 @@ func (c *ColumnDefinitionMarshaler) UnmarshalBinary(data []byte) error {
 	// unmarshal name
 	nameTLV := encoding.NewTLVUnmarshaler[string](strUnmarshaler)
 	if err := nameTLV.UnmarshalBinary(data[n:]); err != nil {
-		return fmt.Errorf("ColumnDefinitionMarshaler.UnmarshalBinary: column name: %w", err)
+		return fmt.Errorf("ColumnDefinitionMarshaler.UnmarshalBinary: name: %w", err)
 	}
 	name := nameTLV.Value
 	n += nameTLV.BytesRead
@@ -123,6 +123,5 @@ func (c *ColumnDefinitionMarshaler) UnmarshalBinary(data []byte) error {
 	copy(c.Name[:], name)
 	c.DataType = dataTypeVal
 	c.AllowNull = allowNull != 0
-
 	return nil
 }
