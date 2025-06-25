@@ -51,6 +51,10 @@ func NewValueUnmarshaler[T any]() *ValueUnmarshaler[T] {
 	return &ValueUnmarshaler[T]{}
 }
 
+func (d *ValueUnmarshaler[T]) GetValue() interface{} {
+	return d.Value
+}
+
 func (d *ValueUnmarshaler[T]) UnmarshalBinary(data []byte) error {
 	var value T
 	switch v := any(&value).(type) {

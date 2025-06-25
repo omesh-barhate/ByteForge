@@ -3,7 +3,6 @@ package index
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,8 +11,6 @@ import (
 	"github.com/omesh-barhate/ByteForge/internal/platform/parser/encoding"
 	"github.com/omesh-barhate/ByteForge/internal/platform/types"
 )
-
-var errItemNotFound = errors.New("item not found in index")
 
 type Index struct {
 	btree *btree.BTreeG[Item]

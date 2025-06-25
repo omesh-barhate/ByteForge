@@ -20,6 +20,10 @@ func NewTLVMarshaler[T any](val T) *TLVMarshaler[T] {
 	}
 }
 
+func (m *TLVMarshaler[T]) BinaryLen() uint32 {
+	return uint32(binary.Size(m.value))
+}
+
 func (m *TLVMarshaler[T]) MarshalBinary() ([]byte, error) {
 	buf := bytes.Buffer{}
 	typeFlag, err := m.typeFlag()
@@ -123,6 +127,10 @@ func NewTLVUnmarshaler[T any](unmarshaler *ValueUnmarshaler[T]) *TLVUnmarshaler[
 	return &TLVUnmarshaler[T]{
 		unmarshaler: unmarshaler,
 	}
+}
+
+func (t *TLVUnmarshaler[T]) GetValue() interface{} {
+	return t.Value
 }
 
 func (t *TLVUnmarshaler[T]) UnmarshalBinary(data []byte) error {

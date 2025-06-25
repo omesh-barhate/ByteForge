@@ -10,16 +10,18 @@ import (
 )
 
 type ColumnDefinitionMarshaler struct {
-	Name      [64]byte
-	DataType  byte
-	AllowNull bool
+	Name        [64]byte
+	DataType    byte
+	AllowNull   bool
+	FullTextIdx bool
 }
 
-func NewColumnDefinitionMarshaler(name [64]byte, dataType byte, allowNull bool) *ColumnDefinitionMarshaler {
+func NewColumnDefinitionMarshaler(name [64]byte, dataType byte, allowNull bool, fullTextIdx bool) *ColumnDefinitionMarshaler {
 	return &ColumnDefinitionMarshaler{
-		Name:      name,
-		DataType:  dataType,
-		AllowNull: allowNull,
+		Name:        name,
+		DataType:    dataType,
+		AllowNull:   allowNull,
+		FullTextIdx: fullTextIdx,
 	}
 }
 
@@ -30,6 +32,9 @@ func (c *ColumnDefinitionMarshaler) Size() uint32 {
 		types.LenByte + // type
 		types.LenInt32 + // len
 		uint32(binary.Size(c.DataType)) + // value
+		types.LenByte + // type
+		types.LenInt32 + // len
+		uint32(binary.Size(c.AllowNull)) + // value
 		types.LenByte + // type
 		types.LenInt32 + // len
 		uint32(binary.Size(c.AllowNull)) // value
@@ -66,6 +71,13 @@ func (c *ColumnDefinitionMarshaler) MarshalBinary() ([]byte, error) {
 	b, err = allowNull.MarshalBinary()
 	if err != nil {
 		return nil, fmt.Errorf("ColumnDefinitionMarshaler.MarshalBinary: allow null: %w", err)
+	}
+	buf.Write(b)
+
+	fullTextIdx := encoding.NewTLVMarshaler(c.FullTextIdx)
+	b, err = fullTextIdx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("ColumnDefinitionMarshaler.MarshalBinary: full text: %w", err)
 	}
 	buf.Write(b)
 
@@ -120,8 +132,17 @@ func (c *ColumnDefinitionMarshaler) UnmarshalBinary(data []byte) error {
 	allowNull := allowNullTLV.Value
 	n += allowNullTLV.BytesRead
 
+	// unmarshal full text idx
+	fullTextTLV := encoding.NewTLVUnmarshaler[byte](byteUnmarshaler)
+	if err := fullTextTLV.UnmarshalBinary(data[n:]); err != nil {
+		return fmt.Errorf("ColumnDefinitionMarshaler.UnmarshalBinary: allow null: %w", err)
+	}
+	fullText := fullTextTLV.Value
+	n += fullTextTLV.BytesRead
+
 	copy(c.Name[:], name)
 	c.DataType = dataTypeVal
 	c.AllowNull = allowNull != 0
+	c.FullTextIdx = fullText != 0
 	return nil
 }

@@ -62,8 +62,8 @@ func (r *RecordParser) Parse() error {
 		}
 	}
 
-	record := make(map[string]interface{})
 	lenRecord, err := read.ReadUint32()
+	record := make(map[string]interface{}, 0)
 	for i := 0; i < len(r.columns); i++ {
 		_, err = read.ReadByte()
 		if err == io.EOF {
@@ -126,9 +126,9 @@ func (r *RecordParser) skipDeletedRecords() error {
 type RawRecord struct {
 	// Size is the size of the record in bytes. This only includes the actual fields
 	Size uint32
-	// FullSize is sum of [RawRecord.Size] and [types.LenMeta] that includes metadata associated with a records such as the type and length bytes
+	// FullSize is sum of [RawRecord.Size] and [LenMeta] that includes metadata associated with a records such as the type and length bytes
 	FullSize uint32
-	// Values contains the actual fields
+	// Record contains the actual fields
 	Record map[string]interface{}
 }
 

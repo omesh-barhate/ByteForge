@@ -18,14 +18,18 @@ import (
 	"github.com/omesh-barhate/ByteForge/internal/platform/types"
 	"github.com/omesh-barhate/ByteForge/internal/table/column"
 	columnio "github.com/omesh-barhate/ByteForge/internal/table/column/io"
+	"github.com/omesh-barhate/ByteForge/internal/table/fulltext"
 	"github.com/omesh-barhate/ByteForge/internal/table/index"
 	"github.com/omesh-barhate/ByteForge/internal/table/wal"
 	walencoding "github.com/omesh-barhate/ByteForge/internal/table/wal/encoding"
 )
 
 const (
-	FileExtension = ".bin"
-	PageSize      = 128
+	FileExtension           = ".bin"
+	PageSize                = 128
+	AccessTypeFullTextIdx   = "fulltext"
+	AccessTypeBtreeIdx      = "btree"
+	AccessTypeFullTableScan = "full_table_scan"
 )
 
 type Columns map[string]*column.Column
@@ -40,14 +44,16 @@ type Table struct {
 	recordParser    *parser.RecordParser
 	columnDefReader *columnio.ColumnDefinitionReader
 
-	index *index.Index
-	wal   *wal.WAL
-	lru   *platform.LRU[string, index.Page]
+	index       *index.Index
+	wal         *wal.WAL
+	lru         *platform.LRU[string, index.Page]
+	fullTextIdx *fulltext.Index
 }
 
 func NewTable(
 	f *os.File,
 	idxFile *os.File,
+	fullTextIdxFile *os.File,
 	reader *platformio.Reader,
 	columnDefReader *columnio.ColumnDefinitionReader,
 	wal *wal.WAL,
@@ -66,10 +72,11 @@ func NewTable(
 		reader:          reader,
 		columnDefReader: columnDefReader,
 		index:           index.NewIndex(idxFile),
-		wal:             wal,
+		fullTextIdx:     fulltext.NewIndex(fullTextIdxFile),
 		lru: platform.NewLRU[string, index.Page](10, func(a, b string) bool {
 			return a == b
 		}),
+		wal: wal,
 	}
 	return t, nil
 }
@@ -77,13 +84,14 @@ func NewTable(
 func NewTableWithColumns(
 	f *os.File,
 	idxFile *os.File,
+	fullTextIdxFile *os.File,
 	reader *platformio.Reader,
 	columnDefReader *columnio.ColumnDefinitionReader,
 	wal *wal.WAL,
 	columns Columns,
 	columnNames []string,
 ) (*Table, error) {
-	t, err := NewTable(f, idxFile, reader, columnDefReader, wal)
+	t, err := NewTable(f, idxFile, fullTextIdxFile, reader, columnDefReader, wal)
 	if err != nil {
 		return nil, fmt.Errorf("NewTableWithColumns: %w", err)
 	}
@@ -110,6 +118,10 @@ func (t *Table) ColumnNames() []string {
 	return t.columnNames
 }
 
+func (t *Table) FullTextIdx() *fulltext.Index {
+	return t.fullTextIdx
+}
+
 func (t *Table) SetRecordParser(recParser *parser.RecordParser) error {
 	if recParser == nil {
 		return fmt.Errorf("Table.SetRecordReader: record reader cannot be nil")
@@ -124,6 +136,9 @@ func (t *Table) Close() error {
 		return fmt.Errorf("Table.Close: %w", err)
 	}
 	if err := t.index.Close(); err != nil {
+		return fmt.Errorf("Table.Close: %w", err)
+	}
+	if err := t.fullTextIdx.Close(); err != nil {
 		return fmt.Errorf("Table.Close: %w", err)
 	}
 	return nil
@@ -227,10 +242,17 @@ func (t *Table) Insert(record map[string]interface{}, useWAL bool) (int, error) 
 		return 0, fmt.Errorf("table.Insert: unable to insert into page: %w. record: %v", err, record)
 	}
 	if err = t.index.AddAndPersist(record["id"].(int64), page.StartPos); err != nil {
-		return 0, fmt.Errorf("table.Insert: unable to persist index: %w. record: %v", err, record)
+		return 1, fmt.Errorf("table.Insert: unable to add to index: %w. record: %v", err, record)
+	}
+	if err = t.addToFullTextIdx(record, page); err != nil {
+		// This happens when the table has no full-text index, so it's not an error
+		if errors.Is(err, &fulltext.ColumnNotFoundError{}) {
+			return 1, nil
+		}
+		return 1, fmt.Errorf("table.Insert: unable to add to full-text index: %w. record: %v", err, record)
 	}
 	if err = t.invalidateCache(page); err != nil {
-		return 0, fmt.Errorf("table.Insert: %w", err)
+		return 1, fmt.Errorf("table.Insert: %w", err)
 	}
 
 	if useWAL {
@@ -240,6 +262,31 @@ func (t *Table) Insert(record map[string]interface{}, useWAL bool) (int, error) 
 	}
 
 	return 1, nil
+}
+
+func (t *Table) addToFullTextIdx(record map[string]interface{}, page *index.Page) error {
+	col, err := t.getFullTextIdxCol(record)
+	// It's not necessarily an error, so we return it as it is
+	if errors.Is(err, &fulltext.ColumnNotFoundError{}) {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("table.addToFullTextIdx: %w", err)
+	}
+	if col == nil {
+		return fmt.Errorf("table.addToFullTextIdx: unable to add to full-text index: col is nil")
+	}
+
+	switch v := record[col.NameToStr()].(type) {
+	case string:
+		if err = t.fullTextIdx.AddAndPersist(v, page.StartPos, record["id"].(int64)); err != nil {
+			return fmt.Errorf("table.addToFullTextIdx: %w", err)
+		}
+	default:
+		return fmt.Errorf("table.addToFullTextIdx: unable to add to full-text index: value is not string: %v", record[col.NameToStr()])
+	}
+
+	return nil
 }
 
 // insertIntoPage finds the first page that can fit buf and writes it into the page
@@ -266,7 +313,10 @@ func (t *Table) insertIntoPage(buf bytes.Buffer) (*index.Page, error) {
 	if _, err = t.file.Seek(page.StartPos, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("Table.insertIntoPage: %w", err)
 	}
-	return page, t.updatePageSize(page.StartPos, int32(buf.Len()))
+	if _, err = t.updatePageSize(page.StartPos, int32(buf.Len())); err != nil {
+		return nil, fmt.Errorf("Table.insertIntoPage: %w", err)
+	}
+	return page, nil
 }
 
 // seekToNextPage seeks the file to the first page that can hold lenToFit number of bytes
@@ -328,7 +378,7 @@ func (t *Table) insertEmptyPage() (*index.Page, error) {
 
 	currPos, err := t.file.Seek(0, io.SeekCurrent)
 	// startPos should point at the very first byte, that is types.TypePage and 5 bytes before the current pos
-	startPos := currPos - (types.LenInt32 + types.LenByte)
+	startPos := currPos - int64(types.LenMeta)
 	if startPos <= 0 {
 		return nil, fmt.Errorf("Table.insertEmptyPage: start position is %d", startPos)
 	}
@@ -357,7 +407,6 @@ func (t *Table) seekUntil(targetType byte) error {
 			if _, err := t.reader.ReadUint32(); err != nil {
 				return fmt.Errorf("Table.seekUntil: %w", err)
 			}
-
 			// The first type flag inside a page should be a record
 			dataType, err = t.skipDeletedRecords()
 			if err != nil {
@@ -386,14 +435,14 @@ func (t *Table) seekUntil(targetType byte) error {
 
 func (t *Table) skipDeletedRecords() (dataType byte, err error) {
 	for {
-		dataType, err := t.reader.ReadByte()
+		dType, err := t.reader.ReadByte()
 		if err != nil {
 			if err == io.EOF {
 				return 0, err
 			}
 			return 0, fmt.Errorf("Table.skipDeletedRecords: %w", err)
 		}
-		if dataType == types.TypeDeletedRecord {
+		if dType == types.TypeDeletedRecord {
 			l, err := t.reader.ReadUint32()
 			if err != nil {
 				return 0, fmt.Errorf("RecordParser.Parse: %w", err)
@@ -402,8 +451,8 @@ func (t *Table) skipDeletedRecords() (dataType byte, err error) {
 				return 0, fmt.Errorf("RecordParser.Parse: %w", err)
 			}
 		}
-		if dataType == types.TypeRecord {
-			return dataType, nil
+		if dType == types.TypeRecord {
+			return dType, nil
 		}
 	}
 }
@@ -413,72 +462,96 @@ func (t *Table) Select(whereStmts map[string]interface{}) (*SelectResult, error)
 		return nil, fmt.Errorf("Table.Select: %w", err)
 	}
 
-	result := newSelectResult()
-	fields := make([]string, 0)
-	for k, _ := range whereStmts {
-		fields = append(fields, k)
-	}
-
-	singleResult := false
-
-	// use the index to seek the file to the right page
-	if slices.Contains(fields, "id") {
-		singleResult = true
-		result.AccessType = "index"
-		val, err := t.index.Get(whereStmts["id"].(int64))
-		if _, err = t.file.Seek(val.PagePos, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("Table.Select: %w", err)
-		}
-
-		key := t.pageKey(val.PagePos)
-		page, err := t.lru.Get(key)
-		if err != nil {
-			if !errors.Is(err, &platform.ItemNotFoundError{}) {
-				return nil, fmt.Errorf("Table.Select: %w", err)
-			}
-
-			// If the given page is not found in the LRU cache we read it from disk and put it in LRU
-			if errors.Is(err, &platform.ItemNotFoundError{}) {
-				result.Extra = "Not using page cache"
-				pr := platformio.NewPageReader(t.reader)
-				pageContent := make([]byte, PageSize+types.LenMeta)
-				n, err := pr.Read(pageContent)
-				if err != nil {
-					return nil, fmt.Errorf("Table.Select: %w", err)
-				}
-				pageContent = pageContent[:n]
-				reader := bytes.NewReader(pageContent)
-				t.recordParser = parser.NewRecordParser(reader, t.ColumnNames())
-				if err = t.lru.Put(key, *index.NewPageWithContent(val.PagePos, pageContent)); err != nil {
-					return nil, fmt.Errorf("Table.Select: %w", err)
-				}
-			}
-		} else {
-			result.Extra = "Using page cache"
-			t.recordParser = parser.NewRecordParser(
-				bytes.NewReader(page.Content),
-				t.ColumnNames(),
-			)
-		}
-	}
-
 	defer func() {
 		t.recordParser = parser.NewRecordParser(t.file, t.ColumnNames())
 	}()
 
+	result := newSelectResult()
+	accessType := t.detectAccessType(whereStmts)
+
+	if accessType == AccessTypeBtreeIdx {
+		result.Type = `index (btree)`
+		val, err := t.index.Get(whereStmts["id"].(int64))
+		if err != nil {
+			return nil, fmt.Errorf("table.Select: %w", err)
+		}
+		cacheHit, err := t.readPage(val.PagePos)
+		if err != nil {
+			return nil, fmt.Errorf("table.Select: %w", err)
+		}
+
+		result.Extra = "Not using page cache"
+		if cacheHit {
+			result.Extra = "Using page cache"
+		}
+
+		if err = t.readRecords(whereStmts, result); err != nil {
+			return nil, fmt.Errorf("table.select: %w", err)
+		}
+		return result, nil
+	}
+	if accessType == AccessTypeFullTextIdx {
+		col, err := t.getFullTextIdxCol(whereStmts)
+		if err != nil {
+			return nil, fmt.Errorf("table.Select: %w", err)
+		}
+		result.Type = "index (fulltext)"
+		result.Extra = "Not using page cache"
+
+		switch v := whereStmts[col.NameToStr()].(type) {
+		case string:
+			items, err := t.fullTextIdx.Get(v)
+			if err != nil {
+				return nil, fmt.Errorf("table.Select: %w", err)
+			}
+
+			processedPages := make([]int64, 0)
+			for _, item := range items {
+				if slices.Contains(processedPages, item.PagePos) {
+					continue
+				}
+				cacheHit, err := t.readPage(item.PagePos)
+				if err != nil {
+					return nil, fmt.Errorf("table.Select: %w", err)
+				}
+				if cacheHit {
+					result.Extra = "Using page cache"
+				}
+				if err = t.readRecords(whereStmts, result); err != nil {
+					return nil, fmt.Errorf("table.Select: %w", err)
+				}
+				processedPages = append(processedPages, item.PagePos)
+			}
+			return result, nil
+		default:
+			return nil, fmt.Errorf("table.Select: unable to use full-text index: value is not string: %v", whereStmts[col.NameToStr()])
+		}
+	}
+	if accessType == AccessTypeFullTableScan {
+		result.Type = "ALL"
+		if err := t.readRecords(whereStmts, result); err != nil {
+			return nil, fmt.Errorf("table.Select: %w", err)
+		}
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("table.Select: invalid access type")
+}
+
+func (t *Table) readRecords(whereStmts map[string]interface{}, result *SelectResult) error {
 	for {
 		err := t.recordParser.Parse()
 		if err != nil {
 			if err == io.EOF {
-				return result, nil
+				return nil
 			}
-			return nil, fmt.Errorf("Table.Select: %w", err)
+			return fmt.Errorf("table.select: %w", err)
 		}
 		rawRecord := t.recordParser.Value
 		result.RowsInspected++
 
 		if err := t.ensureColumnLength(rawRecord.Record); err != nil {
-			return nil, fmt.Errorf("Table.Select: %w", column.NewMismatchingColumnsError(len(t.columns), len(rawRecord.Record)))
+			return fmt.Errorf("table.select: %w", column.NewMismatchingColumnsError(len(t.columns), len(rawRecord.Record)))
 		}
 		if !t.evaluateWhereStmt(whereStmts, rawRecord.Record) {
 			continue
@@ -489,11 +562,38 @@ func (t *Table) Select(whereStmts map[string]interface{}) (*SelectResult, error)
 			res[col] = rawRecord.Record[col]
 		}
 		result.Rows = append(result.Rows, res)
+	}
+}
 
-		if singleResult {
-			return result, nil
+// detectAccessType returns what kind of index can be used to satisfy the given where statement
+// If no index can be used based on the columns an empty string is returned
+// Valid index types can be:
+//   - btree
+//   - fulltext
+func (t *Table) detectAccessType(whereStmts map[string]interface{}) string {
+	fields := make([]string, 0)
+	for k, _ := range whereStmts {
+		fields = append(fields, k)
+	}
+
+	if slices.Contains(fields, "id") {
+		return AccessTypeBtreeIdx
+	}
+
+	_, err := t.getFullTextIdxCol(whereStmts)
+	if err != nil {
+		return AccessTypeFullTableScan
+	}
+	return AccessTypeFullTextIdx
+}
+
+func (t *Table) getFullTextIdxCol(columns map[string]interface{}) (*column.Column, error) {
+	for col, _ := range columns {
+		if t.columns[col].Opts.FullTextIdx {
+			return t.columns[col], nil
 		}
 	}
+	return nil, fulltext.NewColumnNotFoundError()
 }
 
 func (t *Table) Update(whereStmts map[string]interface{}, values map[string]interface{}) (int, error) {
@@ -508,7 +608,6 @@ func (t *Table) Update(whereStmts map[string]interface{}, values map[string]inte
 	if err != nil {
 		return 0, fmt.Errorf("Table.Update: %w", err)
 	}
-
 	for _, rawRecord := range result.deletedRecords {
 		updatedRecord := make(map[string]interface{})
 		for k, v := range rawRecord.Record {
@@ -533,7 +632,7 @@ func (t *Table) Delete(whereStmts map[string]interface{}) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("Table.Delete: %w", err)
 	}
-	for _, p := range result.affectedPages {
+	for _, p := range result.effectedPages {
 		if err = t.invalidateCache(p); err != nil {
 			return len(result.deletedRecords), err
 		}
@@ -545,19 +644,8 @@ func (t *Table) LoadIdx() error {
 	return t.index.Load()
 }
 
-// createTmpFile created a temp file for the table. It is used for delete and update
-func (t *Table) createTmpFile() (*os.File, error) {
-	parts := strings.Split(t.file.Name(), ".")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("Table.createTmpFile: %w", NewInvalidFilename(t.file.Name()))
-	}
-	parts[0] = parts[0] + "_tmp"
-	tmpFilename := strings.Join(parts, ".")
-	tmpFile, err := os.Create(tmpFilename)
-	if err != nil {
-		return nil, fmt.Errorf("Table.createTmpFile: %w", err)
-	}
-	return tmpFile, nil
+func (t *Table) LoadFullTextIdx() error {
+	return t.fullTextIdx.Load()
 }
 
 // ensureFilePointer seeks the file pointer the to first record
@@ -674,10 +762,10 @@ func findContainingPage(pagePositions []int64, pos int64) (int64, error) {
 
 // updatePageSize increases or decreases the size of a page by offset
 // if the new size is 0 the page is removed
-func (t *Table) updatePageSize(page int64, offset int32) (e error) {
+func (t *Table) updatePageSize(page int64, offset int32) (deleted bool, e error) {
 	origPos, err := t.file.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return fmt.Errorf("Table.updatePageSize: %w", err)
+		return false, fmt.Errorf("Table.updatePageSize: %w", err)
 	}
 	defer func() {
 		if _, err := t.file.Seek(origPos, io.SeekStart); err != nil {
@@ -686,25 +774,25 @@ func (t *Table) updatePageSize(page int64, offset int32) (e error) {
 	}()
 
 	if _, err = t.file.Seek(page, io.SeekStart); err != nil {
-		return fmt.Errorf("Table.updatePageSize: %w", err)
+		return false, fmt.Errorf("Table.updatePageSize: %w", err)
 	}
 
 	dataType, err := t.reader.ReadByte()
 	if err != nil {
 		if err == io.EOF {
-			return err
+			return false, err
 		}
-		return fmt.Errorf("Table.updatePageSize: %w", err)
+		return false, fmt.Errorf("Table.updatePageSize: %w", err)
 	}
 	if dataType != types.TypePage {
-		return fmt.Errorf("Table.updatePageSize: file pointer is at wrong position: expected: %d, actual: %d", types.TypePage, dataType)
+		return false, fmt.Errorf("Table.updatePageSize: file pointer is at wrong position: expected: %d, actual: %d", types.TypePage, dataType)
 	}
 	length, err := t.reader.ReadUint32()
 	if err != nil {
-		return fmt.Errorf("Table.updatePageSize: %w", err)
+		return false, fmt.Errorf("Table.updatePageSize: %w", err)
 	}
 	if _, err = t.file.Seek(-1*types.LenInt32, io.SeekCurrent); err != nil {
-		return fmt.Errorf("Table.updatePageSize: %w", err)
+		return false, fmt.Errorf("Table.updatePageSize: %w", err)
 	}
 
 	var newLength uint32
@@ -717,19 +805,20 @@ func (t *Table) updatePageSize(page int64, offset int32) (e error) {
 	marshaler := encoding.NewValueMarshaler[uint32](newLength)
 	b, err := marshaler.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("Table.updatePageSize: %w", err)
+		return false, fmt.Errorf("Table.updatePageSize: %w", err)
 	}
 	n, err := t.file.Write(b)
 	if n != len(b) {
-		return fmt.Errorf("Table.updatePageSize: %w", columnio.NewIncompleteWriteError(len(b), n))
+		return false, fmt.Errorf("Table.updatePageSize: %w", columnio.NewIncompleteWriteError(len(b), n))
 	}
 
 	if newLength == 0 {
 		if err = t.removeEmptyPage(page); err != nil {
-			return fmt.Errorf("Table.updatePageSize: %w", err)
+			return false, fmt.Errorf("Table.updatePageSize: %w", err)
 		}
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 func (t *Table) removeEmptyPage(page int64) (e error) {
@@ -789,6 +878,43 @@ func (t *Table) removeEmptyPage(page int64) (e error) {
 		return fmt.Errorf("Table.removeEmptyPage: %w", err)
 	}
 	return nil
+}
+
+// readPage reads a page starting at pagePos from the LRU page cache or the disk if it cannot be found in cache
+// It returns true on cache hit, false otherwise
+func (t *Table) readPage(pagePos int64) (bool, error) {
+	if _, err := t.file.Seek(pagePos, io.SeekStart); err != nil {
+		return false, fmt.Errorf("table.readPageFromCache: %w", err)
+	}
+
+	key := t.pageKey(pagePos)
+	item, err := t.lru.Get(key)
+	if err != nil && !errors.Is(err, &platform.ItemNotFoundError{}) {
+		return false, fmt.Errorf("table.readPageFromCache: %w", err)
+	}
+
+	// If the given page is not found in the LRU cache we read it from disk and put it in LRU
+	if err != nil && errors.Is(err, &platform.ItemNotFoundError{}) {
+		pr := platformio.NewPageReader(t.reader)
+		pageContent := make([]byte, PageSize+types.LenByte+types.LenInt32)
+		n, err := pr.Read(pageContent)
+		if err != nil {
+			return false, fmt.Errorf("table.readPageFromCache: %w", err)
+		}
+		pageContent = pageContent[:n]
+		reader := bytes.NewReader(pageContent)
+		t.recordParser = parser.NewRecordParser(reader, t.ColumnNames())
+		if err = t.lru.Put(key, *index.NewPageWithContent(pagePos, pageContent)); err != nil {
+			return false, fmt.Errorf("table.readPageFromCache: %w", err)
+		}
+		return false, nil
+	} else {
+		t.recordParser = parser.NewRecordParser(
+			bytes.NewReader(item.Content),
+			t.ColumnNames(),
+		)
+		return true, nil
+	}
 }
 
 // delete deletes records that satisfy the given where statement
@@ -851,6 +977,9 @@ func (t *Table) delete(whereStmts map[string]interface{}) (*deleteResult, error)
 	if err := t.index.RemoveManyAndPersist(ids); err != nil {
 		return nil, fmt.Errorf("Table.delete: %w", err)
 	}
+	if err := t.fullTextIdx.RemoveManyAndPersist(ids); err != nil {
+		return nil, fmt.Errorf("Table.delete: %w", err)
+	}
 	return result, nil
 }
 
@@ -876,7 +1005,7 @@ func (t *Table) markRecordsDeleted(deletableRecords []*DeletableRecord) (n int, 
 
 type deleteResult struct {
 	deletedRecords []*parser.RawRecord
-	affectedPages  []*index.Page
+	effectedPages  []*index.Page
 }
 
 func newDeleteResult() *deleteResult {
@@ -888,20 +1017,20 @@ func (dr *deleteResult) addRecord(r *parser.RawRecord) {
 }
 
 func (dr *deleteResult) addPage(p *index.Page) {
-	dr.affectedPages = append(dr.affectedPages, p)
+	dr.effectedPages = append(dr.effectedPages, p)
 }
 
 type SelectResult struct {
 	Rows          []map[string]interface{}
-	AccessType    string
+	Type          string
 	RowsInspected int
 	Extra         string
 }
 
 func newSelectResult() *SelectResult {
 	return &SelectResult{
-		AccessType: "ALL",
-		Extra:      "Not using page cache",
+		Type:  "ALL",
+		Extra: "Not using page cache",
 	}
 }
 
@@ -925,9 +1054,10 @@ func (t *Table) invalidateCache(page *index.Page) error {
 	if err := t.lru.Remove(t.pageKey(page.StartPos)); err != nil {
 		if errors.Is(err, &platform.ItemNotFoundError{}) {
 			log.Printf("invalidating page from cache that doesn't exist: %d", page.StartPos)
-			return nil
 		}
-		return fmt.Errorf("table.invalidateCache: %w, page key: %s", err, t.pageKey(page.StartPos))
+		if !errors.Is(err, &platform.ItemNotFoundError{}) {
+			return fmt.Errorf("table.invalidateCache: %w, page key: %s", err, t.pageKey(page.StartPos))
+		}
 	}
 	return nil
 }
@@ -968,7 +1098,7 @@ func (t *Table) RestoreWAL() error {
 		return fmt.Errorf("Table.RestoreWAL: %w", columnio.NewIncompleteWriteError(len(restorableData.Data), n))
 	}
 
-	//fmt.Printf("RestoreWAL wrote %d bytes\n", n)
+	fmt.Printf("RestoreWAL wrote %d bytes\n", n)
 
 	if err = t.wal.Commit(restorableData.LastEntry); err != nil {
 		return fmt.Errorf("Table.RestoreWAL: %w", err)
@@ -998,9 +1128,14 @@ func (t *Table) ReadRaw() ([]byte, error) {
 	return buf, nil
 }
 
-// ReadRawIdx returns the raw byte array stored in the table. It's for debugging
+// ReadRawIdx returns the raw byte array stored in the file. It's for debugging
 func (t *Table) ReadRawIdx() ([]byte, error) {
 	return t.index.ReadRaw()
+}
+
+// ReadRawFullTextIdx returns the raw byte array stored in the file. It's for debugging
+func (t *Table) ReadRawFullTextIdx() ([]byte, error) {
+	return t.fullTextIdx.ReadRaw()
 }
 
 func (t *Table) GetIndex() []index.Item {
@@ -1008,9 +1143,10 @@ func (t *Table) GetIndex() []index.Item {
 }
 
 type DeletableRecord struct {
-	id  int64
-	pos int64
-	len uint32
+	id   int64
+	page int64
+	pos  int64
+	len  uint32
 }
 
 func NewDeletableRecord(id, pos int64, len uint32) *DeletableRecord {

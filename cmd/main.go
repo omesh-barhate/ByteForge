@@ -5,11 +5,12 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/omesh-barhate/ByteForge/internal"
+	"github.com/omesh-barhate/ByteForge/internal/platform/parser/encoding"
 	"github.com/omesh-barhate/ByteForge/internal/platform/types"
 	"github.com/omesh-barhate/ByteForge/internal/table/column"
+	"github.com/omesh-barhate/ByteForge/internal/table/fulltext"
 )
 
 func main() {
@@ -24,43 +25,51 @@ func main() {
 		testCreateTable()
 	case "r":
 		testReadTable()
+	case "t":
+		testFoo()
 	}
+}
+
+func testFoo() {
+	values := []encoding.EmbeddedValueMarshaler{
+		fulltext.NewIndexItem(128, 1),
+		fulltext.NewIndexItem(128, 2),
+	}
+	m := encoding.NewListMarshaler(values)
+	data, err := m.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%v\n", data)
 }
 
 func testCreateTable() {
 	_ = os.Remove("./data/my_db/users.bin")
+	_ = os.Remove("./data/my_db/users_idx.bin")
+	_ = os.Remove("./data/my_db/users_fulltext_idx.bin")
+	_ = os.Remove("./data/my_db/users_wal.bin")
+	_ = os.Remove("./data/my_db/users_wal_last_commit.bin")
 
 	db, err := internal.NewDatabase("my_db")
 	if err != nil {
-		if _, ok := err.(*internal.DatabaseDoesNotExistError); ok {
-			db, err = internal.CreateDatabase("my_db")
-			if err != nil {
-				log.Fatal(err)
-			}
-		} else {
-			log.Fatal(err)
-		}
+		log.Fatal(err)
 	}
 	defer db.Close()
 
 	createTable(db)
+
 	insert(db, 1, "software engineer", 31, true)
 	insert(db, 2, "software engineer", 27, false)
-	insert(db, 3, "designer", 28, true)
-	queryAll(db)
+	insert(db, 3, "software engineer", 27, false)
+	insert(db, 4, "designer", 28, true)
+
+	printRawFulLTextIdx(db)
 }
 
 func testReadTable() {
 	db, err := internal.NewDatabase("my_db")
 	if err != nil {
-		if _, ok := err.(*internal.DatabaseDoesNotExistError); ok {
-			db, err = internal.CreateDatabase("my_db")
-			if err != nil {
-				log.Fatal(err)
-			}
-		} else {
-			log.Fatal(err)
-		}
+		log.Fatal(err)
 	}
 	defer db.Close()
 
@@ -68,12 +77,12 @@ func testReadTable() {
 }
 
 func createTable(db *internal.Database) {
-	id, err := column.New("id", types.TypeInt64, column.NewOpts(false))
+	id, err := column.New("id", types.TypeInt64, column.NewColumnOpts(false, false))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	username, err := column.New("username", types.TypeString, column.NewOpts(false))
+	username, err := column.New("username", types.TypeString, column.NewColumnOpts(false, false))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -83,7 +92,7 @@ func createTable(db *internal.Database) {
 		log.Fatal(err)
 	}
 
-	job, err := column.New("job", types.TypeString, column.Opts{})
+	job, err := column.New("job", types.TypeString, column.NewColumnOpts(false, true))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -140,6 +149,11 @@ func printRawIdx(db *internal.Database) {
 	fmt.Println(b)
 }
 
+func printRawFulLTextIdx(db *internal.Database) {
+	b, _ := db.Tables["users"].ReadRawFullTextIdx()
+	fmt.Println(b)
+}
+
 func del(db *internal.Database) {
 	_, err := db.Tables["users"].Delete(map[string]interface{}{
 		"job": "designer",
@@ -169,7 +183,7 @@ func query(db *internal.Database, id int64) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("%s\n", rows.Extra)
+	fmt.Println(rows)
 }
 
 func queryByJob(db *internal.Database, job string) {
@@ -179,6 +193,7 @@ func queryByJob(db *internal.Database, job string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Printf("%#v\n", rows)
 	fmt.Println(rows)
 }
 
@@ -194,22 +209,15 @@ func seed(db *internal.Database, n int) {
 	fmt.Println("seeding...")
 	for i := 1; i < n; i++ {
 		_, err := db.Tables["users"].Insert(map[string]interface{}{
-			"id":        int64(i),
-			"username":  "user" + strconv.Itoa(i),
-			"job":       "software engineer",
-			"age":       byte(30),
-			"is_active": true,
+			"id":       int64(i),
+			"username": "user" + strconv.Itoa(i),
+			"job":      "software engineer",
+			"age":      byte(30),
+			"is_cool":  true,
 		}, true)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 	fmt.Println("seeding done")
-}
-
-func measureOne(db *internal.Database, id int64) {
-	start := time.Now()
-	query(db, id)
-	since := time.Since(start)
-	fmt.Printf("selected ID %d in %d microseconds\n", id, since.Microseconds())
 }

@@ -105,6 +105,11 @@ func (db *Database) readTables() (Tables, error) {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 
+		fullTextIdxFile, err := os.OpenFile(filepath.Join(db.Path, parts[0]+"_fulltext_idx."+parts[1]), os.O_APPEND|os.O_RDWR, 0666)
+		if err != nil {
+			return nil, fmt.Errorf("Database.readTables: %w", err)
+		}
+
 		r, err := io.NewReader(f)
 		columnDefReader := columnio.NewColumnDefinitionReader(f, r)
 		tableName, err := table.GetTableName(f)
@@ -116,7 +121,7 @@ func (db *Database) readTables() (Tables, error) {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 
-		t, err := table.NewTable(f, idxFile, r, columnDefReader, writeAheadLog)
+		t, err := table.NewTable(f, idxFile, fullTextIdxFile, r, columnDefReader, writeAheadLog)
 		if err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
@@ -128,6 +133,9 @@ func (db *Database) readTables() (Tables, error) {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 		if err = t.LoadIdx(); err != nil {
+			return nil, fmt.Errorf("Database.readTables: %w", err)
+		}
+		if err = t.LoadFullTextIdx(); err != nil {
 			return nil, fmt.Errorf("Database.readTables: %w", err)
 		}
 		tables = append(tables, t)
@@ -146,12 +154,20 @@ func (db *Database) CreateTable(dbPath, name string, columnNames []string, colum
 	if _, err := os.Open(path); err == nil {
 		return nil, fmt.Errorf("Database.CreateTable: %w", NewTableAlreadyExistsError(name))
 	}
+	fullTextIdxPath := filepath.Join(dbPath, name+"_fulltext_idx"+table.FileExtension)
+	if _, err := os.Open(path); err == nil {
+		return nil, fmt.Errorf("Database.CreateTable: %w", NewTableAlreadyExistsError(name))
+	}
 
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}
 	idxFile, err := os.Create(idxPath)
+	if err != nil {
+		return nil, fmt.Errorf("Database.CreateTable: %w", err)
+	}
+	fullTextIdxFile, err := os.Create(fullTextIdxPath)
 	if err != nil {
 		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}
@@ -167,7 +183,7 @@ func (db *Database) CreateTable(dbPath, name string, columnNames []string, colum
 		return nil, NewCannotCreateTableError(err, name)
 	}
 
-	t, err := table.NewTableWithColumns(f, idxFile, r, columnDefReader, writeAheadLog, columns, columnNames)
+	t, err := table.NewTableWithColumns(f, idxFile, fullTextIdxFile, r, columnDefReader, writeAheadLog, columns, columnNames)
 	if err != nil {
 		return nil, fmt.Errorf("Database.CreateTable: %w", err)
 	}

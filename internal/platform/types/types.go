@@ -9,19 +9,23 @@ const (
 
 	TypeWALEntry         byte = 20
 	TypeWALLastIDItem    byte = 21
-	TypeColumnDefinition byte = 99
+	TypeColumnDefinition byte = 90
 	TypeRecord           byte = 100
 	TypeDeletedRecord    byte = 101
-	TypeIndexItem        byte = 253
-	TypeIndex            byte = 254
+	TypeHMap             byte = 220
+	TypeHMapKey          byte = 221
+	TypeHMapVal          byte = 222
+	TypeList             byte = 230
+	TypeIndex            byte = 240
+	TypeIndexItem        byte = 241
 	TypePage             byte = 255
 )
 
 const (
 	LenByte  = 1
 	LenInt32 = 4
-	LenInt64 = 8
-	LenMeta  = 5
+	// LenMeta represents the "meta" bytes in each TLV record that accounts for type+len, for example: 1 8 0 0 0 || 10 0 0 0 0 0 0 0 0 the bytes before the || are the "meta" bytes and 10 ... is the actual value
+	LenMeta uint32 = 5
 )
 
 type Scalar interface {
